@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-subagents-overhaul"
+version = "0.1.0"
+description = "A Devin-CLI-style subagent system for Hermes: run_subagent / read_subagent (foreground and background) backed by real external AI-agent processes (Devin CLI via `devin acp`, OpenAI Codex via `codex app-server`), surfaced as proper ACP events via the companion hermes-acp-plugin."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "hermes-subagents-overhaul contributors" }]
+keywords = ["hermes", "subagents", "acp", "agent-client-protocol", "devin", "codex"]
+
+# hermes-agent (the host) and agent-client-protocol are provided by the user's
+# installed Hermes. We do NOT hard-pin them so this package installs into the same
+# environment without fighting Hermes' own constraints. The external subagent
+# backends (Devin CLI, OpenAI Codex) are separate binaries checked at runtime by
+# `hermes_subagents_overhaul.doctor` / each backend's `check_available`.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+hermes-subagents-doctor = "hermes_subagents_overhaul.doctor:main"
+
+# Hermes plugin discovery (pip path). Resolves via `ep.load()` to the
+# `hermes_subagents_overhaul` package module, which exposes `register(ctx)`.
+[project.entry-points."hermes_agent.plugins"]
+hermes-subagents-overhaul = "hermes_subagents_overhaul"
+
+[tool.setuptools.packages.find]
+include = ["hermes_subagents_overhaul*"]
+exclude = [".reference*", "tests*", "scripts*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

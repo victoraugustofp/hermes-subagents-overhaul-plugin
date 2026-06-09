@@ -1,0 +1,12 @@
+name: hermes-subagents-overhaul
+version: "0.1.0"
+description: >-
+  A Devin-CLI-style subagent system for Hermes: run_subagent / read_subagent
+  (foreground and background), backed by real external AI-agent processes
+  (Devin CLI via `devin acp`, OpenAI Codex via `codex app-server`). Subagent
+  activity surfaces as proper ACP events through the companion hermes-acp-plugin.
+author: hermes-subagents-overhaul contributors
+
+# Tools (run_subagent / read_subagent), the /subagents command, and hooks are
+# auto-discovered from hermes_subagents_overhaul/contrib/*.py at register() time,
+# so this manifest intentionally does not hard-list them.
