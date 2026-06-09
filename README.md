@@ -29,32 +29,60 @@ for the validated transport/bridge notes.
   activity becomes `session/update` notifications. Each repo works without the other (graceful
   degradation to the CLI/TUI progress callback).
 
-## Install
+## Install (recommended — one command)
 
-Install into the same environment as your `hermes-agent`:
+From the repo, run the one-shot setup with **any** Python (it finds your Hermes venv itself):
 
 ```bash
-/path/to/hermes-venv/bin/python scripts/install.py            # or: pip install .
-/path/to/hermes-venv/bin/python scripts/install.py --editable # dev mode
-hermes-subagents-doctor                                       # check backends/creds/bridge
+python scripts/setup.py
 ```
 
-## Enable
+It is idempotent and safe to re-run. It:
+1. locates the Python your `hermes` command actually runs (the `hermes` wrapper →
+   `.../venv/bin/python`, or `~/.hermes/hermes-agent/venv`);
+2. installs this repo into that venv (editable; uses `pip` or `uv`);
+3. enables the plugin in **every** Hermes profile config it finds
+   (`~/.hermes/config.yaml` and `~/.hermes/profiles/*/config.yaml`) — adds
+   `hermes-subagents-overhaul` to `plugins.enabled` **and** sets
+   `acp.enabled_toolsets: [hermes-acp, subagents]` (backing up each file first);
+4. runs `hermes-subagents-doctor`.
 
-Entry-point plugins are **opt-in** in Hermes. Enable it and (for ACP) expose the toolset:
+Restart any running `hermes` sessions afterward. Useful flags:
 
 ```bash
-hermes plugins enable hermes-subagents-overhaul
+python scripts/setup.py --no-editable                      # regular (copied) install
+python scripts/setup.py --skip-install                     # only enable in configs
+python scripts/setup.py --skip-enable                      # only install into the venv
+python scripts/setup.py --hermes-python /path/to/venv/bin/python
+python scripts/setup.py --config ~/.hermes/profiles/coder/config.yaml   # specific config(s)
+```
+
+> Editable install means this repo must stay where it is; `git pull` here updates the
+> plugin everywhere. Use `--no-editable` for a location-independent copy.
+
+## Manual install / enable (if you prefer)
+
+```bash
+# 1) install into the SAME venv as hermes-agent (uv example for uv-managed venvs):
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -e .
+#    or, if the venv has pip:  ~/.hermes/hermes-agent/venv/bin/python -m pip install -e .
+
+# 2) enable per profile config (~/.hermes/config.yaml, ~/.hermes/profiles/*/config.yaml):
 ```
 
 ```yaml
-# ~/.hermes/config.yaml
 plugins:
-  enabled: [hermes-subagents-overhaul]      # CLI/TUI/gateway
-
+  enabled:
+    - hermes-subagents-overhaul   # CLI/TUI/gateway (entry-point plugins are opt-in)
 acp:
-  enabled_toolsets: [hermes-acp, subagents] # so ACP sessions expose the tools
+  enabled_toolsets:               # so ACP sessions (Devin Desktop/Zed) expose the tools
+    - hermes-acp
+    - subagents
 ```
+
+> Note: `hermes plugins enable …` only manages git/bundled plugins, **not** pip
+> entry-point plugins like this one — enable it via `plugins.enabled` (as above) or
+> just run `scripts/setup.py`, which does it for you.
 
 ## Configure profiles
 
