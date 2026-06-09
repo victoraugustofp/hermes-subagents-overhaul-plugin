@@ -36,7 +36,12 @@ from hermes_subagents_overhaul.backends.base import (
     SubagentResult,
     new_agent_id,
 )
-from hermes_subagents_overhaul.sinks.base import OUTCOME_DENY, SubagentSink, make_sink
+from hermes_subagents_overhaul.sinks.base import (
+    OUTCOME_ALLOW,
+    OUTCOME_DENY,
+    SubagentSink,
+    make_sink,
+)
 
 logger = logging.getLogger("hermes_subagents_overhaul.manager")
 
@@ -297,16 +302,25 @@ class SubagentManager:
         request_id = str(perm.get("request_id") or "")
         handle = record.handle
         sink = record.sink
-        outcome = OUTCOME_DENY
-        try:
-            if sink is not None:
-                outcome = sink.request_permission(perm)
-        except Exception as exc:
-            logger.warning("permission relay failed for %s: %s", record.agent_id, exc)
-            outcome = OUTCOME_DENY
+        # Background subagents run autonomously (no human to prompt); the profile's
+        # sandbox is the real guardrail, so we auto-allow and let the backend's
+        # sandbox enforce limits. Foreground relays to the sink (editor approval).
+        if record.background:
+            raw = OUTCOME_ALLOW
+        else:
+            raw = OUTCOME_DENY
+            try:
+                if sink is not None:
+                    raw = sink.request_permission(perm)
+            except Exception as exc:
+                logger.warning("permission relay failed for %s: %s", record.agent_id, exc)
+                raw = OUTCOME_DENY
+        # Normalize to (outcome, concrete option id) so every backend gets a clean
+        # signal: codex ignores option_id; devin needs it to select an ACP option.
+        outcome, option_id = _normalize_permission(raw, perm.get("options"))
         if handle is not None and request_id:
             try:
-                handle.answer_permission(request_id, outcome, perm.get("selected_option_id"))
+                handle.answer_permission(request_id, outcome, option_id)
             except Exception as exc:
                 logger.warning("answer_permission failed for %s: %s", record.agent_id, exc)
 
@@ -414,6 +428,46 @@ class SubagentManager:
                 f"Background subagent limit reached ({cap}). "
                 f"Wait for one to finish (read_subagent) before starting another."
             )
+
+
+_DENY_WORDS = {"deny", "denied", "reject", "rejected", "cancel", "cancelled", "no", "block"}
+_ALLOW_WORDS = {"allow", "allowed", "approve", "approved", "yes", "accept", "accepted",
+                "once", "session", "always", "selected"}
+
+
+def _pick_allow_option(options: Any) -> str | None:
+    """Choose a concrete allow-like ACP option id from the offered options."""
+    opts = options or []
+    if not isinstance(opts, list):
+        return None
+    ids = []
+    for o in opts:
+        oid = str((o or {}).get("id") or "")
+        name = f"{oid} {(o or {}).get('name') or ''}".lower()
+        if oid:
+            ids.append(oid)
+            if any(w in name for w in _ALLOW_WORDS) and not any(w in name for w in _DENY_WORDS):
+                return oid
+    return ids[0] if ids else None
+
+
+def _normalize_permission(raw: str, options: Any) -> tuple[str, str | None]:
+    """Map a sink/manager outcome (``allow``/``deny`` or a specific option id) to a
+    clean ``(outcome, option_id)`` where outcome is :data:`OUTCOME_ALLOW`/``OUTCOME_DENY``."""
+    val = str(raw or "").strip()
+    low = val.lower()
+    if low in _DENY_WORDS or val == OUTCOME_DENY:
+        return OUTCOME_DENY, None
+    if low in _ALLOW_WORDS or val == OUTCOME_ALLOW:
+        return OUTCOME_ALLOW, _pick_allow_option(options)
+    # A specific option id was chosen by the editor: deny iff it looks deny-like.
+    for o in options or []:
+        if str((o or {}).get("id") or "") == val:
+            name = f"{val} {(o or {}).get('name') or ''}".lower()
+            if any(w in name for w in _DENY_WORDS):
+                return OUTCOME_DENY, val
+            return OUTCOME_ALLOW, val
+    return OUTCOME_ALLOW, val or _pick_allow_option(options)
 
 
 def _safe_sink(fn: Callable, *args: Any, **kwargs: Any) -> None:
