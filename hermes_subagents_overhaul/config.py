@@ -66,7 +66,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 DEFAULT_PROFILES: dict[str, dict[str, Any]] = {
     "subagent_explore": {
         "backend": BACKEND_CODEX,
-        "model": "gpt-5.1-codex",
+        "model": "gpt-5.5",
         "sandbox": SANDBOX_READ_ONLY,
         "read_only": True,
         "description": "Read-only research / exploration (no writes).",
@@ -79,13 +79,13 @@ DEFAULT_PROFILES: dict[str, dict[str, Any]] = {
     },
     "coder": {
         "backend": BACKEND_DEVIN,
-        "model": "sonnet",
+        "model": "gpt",
         "sandbox": SANDBOX_WORKSPACE_WRITE,
         "description": "Implement features / fix bugs (Devin).",
     },
     "debugger": {
         "backend": BACKEND_CODEX,
-        "model": "gpt-5.1-codex",
+        "model": "gpt-5.5",
         "sandbox": SANDBOX_WORKSPACE_WRITE,
         "description": "Systematic debugging / root-cause analysis.",
     },
