@@ -90,8 +90,11 @@ def read_only_profile() -> ResolvedProfile:
 
 
 def test_check_available_devin_not_found(devin_backend: DevinAcpBackend) -> None:
-    """check_available returns False if devin binary is not in PATH."""
-    with patch("shutil.which", return_value=None):
+    """check_available returns False if devin binary is not resolvable."""
+    with patch(
+        "hermes_subagents_overhaul.backends.devin_acp.binaries.resolve_backend_binary",
+        return_value=None,
+    ):
         ok, reason = devin_backend.check_available(
             ResolvedProfile(name="test", backend="devin")
         )
@@ -101,7 +104,10 @@ def test_check_available_devin_not_found(devin_backend: DevinAcpBackend) -> None
 
 def test_check_available_not_logged_in(devin_backend: DevinAcpBackend) -> None:
     """check_available returns False when no usable ACP API key can be resolved."""
-    with patch("shutil.which", return_value="/usr/bin/devin"):
+    with patch(
+        "hermes_subagents_overhaul.backends.devin_acp.binaries.resolve_backend_binary",
+        return_value="/usr/bin/devin",
+    ):
         # No env key and no resolvable on-disk windsurf_api_key.
         with patch(
             "hermes_subagents_overhaul.backends.devin_acp._resolve_devin_api_key",
@@ -116,7 +122,10 @@ def test_check_available_not_logged_in(devin_backend: DevinAcpBackend) -> None:
 
 def test_check_available_with_credentials_file(devin_backend: DevinAcpBackend) -> None:
     """check_available returns True if credentials file exists."""
-    with patch("shutil.which", return_value="/usr/bin/devin"):
+    with patch(
+        "hermes_subagents_overhaul.backends.devin_acp.binaries.resolve_backend_binary",
+        return_value="/usr/bin/devin",
+    ):
         with patch("pathlib.Path.exists", return_value=True):
             ok, reason = devin_backend.check_available(
                 ResolvedProfile(name="test", backend="devin")
@@ -127,7 +136,10 @@ def test_check_available_with_credentials_file(devin_backend: DevinAcpBackend) -
 
 def test_check_available_with_windsurf_api_key(devin_backend: DevinAcpBackend) -> None:
     """check_available returns True if WINDSURF_API_KEY is set."""
-    with patch("shutil.which", return_value="/usr/bin/devin"):
+    with patch(
+        "hermes_subagents_overhaul.backends.devin_acp.binaries.resolve_backend_binary",
+        return_value="/usr/bin/devin",
+    ):
         with patch("pathlib.Path.exists", return_value=False):
             with patch.dict(os.environ, {"WINDSURF_API_KEY": "test-key"}):
                 ok, reason = devin_backend.check_available(
@@ -139,7 +151,10 @@ def test_check_available_with_windsurf_api_key(devin_backend: DevinAcpBackend) -
 
 def test_check_available_with_devin_api_key(devin_backend: DevinAcpBackend) -> None:
     """check_available returns True if DEVIN_API_KEY and DEVIN_ORG_ID are set."""
-    with patch("shutil.which", return_value="/usr/bin/devin"):
+    with patch(
+        "hermes_subagents_overhaul.backends.devin_acp.binaries.resolve_backend_binary",
+        return_value="/usr/bin/devin",
+    ):
         with patch("pathlib.Path.exists", return_value=False):
             with patch.dict(
                 os.environ,

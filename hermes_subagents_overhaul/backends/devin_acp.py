@@ -11,13 +11,13 @@ from __future__ import annotations
 import json
 import os
 import queue
-import shutil
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator
 
+from hermes_subagents_overhaul import binaries
 from hermes_subagents_overhaul.backends.base import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -71,8 +71,8 @@ class DevinAcpBackend:
 
         Returns (True, "") if available, else (False, reason).
         """
-        if not shutil.which("devin"):
-            return (False, "devin binary not found in PATH")
+        if not binaries.resolve_backend_binary("devin"):
+            return (False, "devin binary not found (PATH or ~/.local/bin/Homebrew)")
 
         # `devin acp` mandates ACP-host authentication, so we need a usable key.
         if not _resolve_devin_api_key():
@@ -157,10 +157,16 @@ class DevinAcpHandle:
         else:
             env["DEVIN_PERMISSION_MODE"] = "dangerous"
 
+        # Resolve the devin binary to an absolute path (the inherited PATH may be
+        # minimal under a GUI-launched ACP server) and ensure the child's PATH
+        # includes its dir + common bin dirs so `devin acp` can find node etc.
+        devin_bin = binaries.resolve_backend_binary("devin") or "devin"
+        env = binaries.child_env_with_resolved_path(devin_bin, env)
+
         # Spawn the child
         try:
             self._proc = subprocess.Popen(
-                ["devin", "acp"],
+                [devin_bin, "acp"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

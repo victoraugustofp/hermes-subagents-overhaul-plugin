@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 import queue
-import shutil
 import threading
 import uuid
 from typing import Any, Callable, Iterator, Optional
@@ -23,6 +22,7 @@ from typing import Any, Callable, Iterator, Optional
 from agent.transports.codex_app_server import CodexAppServerClient
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
+from hermes_subagents_overhaul import binaries
 from hermes_subagents_overhaul.backends.base import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -54,14 +54,19 @@ def _make_session(
         extra_args.extend(["-c", f'sandbox_mode="{profile.sandbox}"'])
     extra_args.extend(profile.extra_args)
 
-    # Merge env
-    env = dict(os.environ)
+    # Resolve the codex binary to an absolute path (the inherited PATH may be
+    # minimal under a GUI-launched ACP server) and ensure the child PATH includes
+    # its dir + common bin dirs (codex re-execs node).
+    resolved_codex = binaries.resolve_backend_binary("codex")
+
+    # Merge env (+ augment PATH so the spawned codex can find node/deps)
+    env = binaries.child_env_with_resolved_path(resolved_codex, dict(os.environ))
     env.update(profile.env)
 
-    # Create a client_factory that passes extra_args
+    # Create a client_factory that passes extra_args + the resolved binary path.
     def client_factory(codex_bin: str = "codex", codex_home: Optional[str] = None):
         return CodexAppServerClient(
-            codex_bin=codex_bin,
+            codex_bin=resolved_codex or codex_bin,
             codex_home=codex_home,
             extra_args=extra_args if extra_args else None,
             env=env if env else None,
@@ -161,9 +166,9 @@ class CodexAppServerBackend:
 
     def check_available(self, profile: ResolvedProfile) -> tuple[bool, str]:
         """Check if codex binary exists and credentials are available."""
-        # Check for codex binary
-        if not shutil.which("codex"):
-            return (False, "codex binary not found in PATH")
+        # Check for codex binary (robust resolution, not just PATH)
+        if not binaries.resolve_backend_binary("codex"):
+            return (False, "codex binary not found (PATH or ~/.local/bin/Homebrew/nvm)")
 
         # Check for credentials: OPENAI_API_KEY env or ~/.codex/auth.json
         if os.environ.get("OPENAI_API_KEY"):

@@ -184,7 +184,10 @@ def monkeypatch_make_session(monkeypatch: pytest.MonkeyPatch):
 
 def test_check_available_codex_not_found(monkeypatch: pytest.MonkeyPatch):
     """check_available returns False if codex binary is missing."""
-    monkeypatch.setattr("shutil.which", lambda x: None)
+    monkeypatch.setattr(
+        "hermes_subagents_overhaul.backends.codex_app_server.binaries.resolve_backend_binary",
+        lambda name, cfg=None: None,
+    )
     backend = CodexAppServerBackend()
     profile = ResolvedProfile(name="test", backend="codex")
     ok, reason = backend.check_available(profile)
@@ -194,7 +197,10 @@ def test_check_available_codex_not_found(monkeypatch: pytest.MonkeyPatch):
 
 def test_check_available_with_openai_api_key(monkeypatch: pytest.MonkeyPatch):
     """check_available returns True if codex binary exists and OPENAI_API_KEY is set."""
-    monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/codex")
+    monkeypatch.setattr(
+        "hermes_subagents_overhaul.backends.codex_app_server.binaries.resolve_backend_binary",
+        lambda name, cfg=None: "/usr/bin/codex",
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     backend = CodexAppServerBackend()
     profile = ResolvedProfile(name="test", backend="codex")
@@ -205,7 +211,10 @@ def test_check_available_with_openai_api_key(monkeypatch: pytest.MonkeyPatch):
 
 def test_check_available_with_auth_json(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """check_available returns True if codex binary exists and ~/.codex/auth.json exists."""
-    monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/codex")
+    monkeypatch.setattr(
+        "hermes_subagents_overhaul.backends.codex_app_server.binaries.resolve_backend_binary",
+        lambda name, cfg=None: "/usr/bin/codex",
+    )
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     codex_home = tmp_path / ".codex"
     codex_home.mkdir()
@@ -220,7 +229,10 @@ def test_check_available_with_auth_json(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 def test_check_available_no_credentials(monkeypatch: pytest.MonkeyPatch):
     """check_available returns False if no credentials are found."""
-    monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/codex")
+    monkeypatch.setattr(
+        "hermes_subagents_overhaul.backends.codex_app_server.binaries.resolve_backend_binary",
+        lambda name, cfg=None: "/usr/bin/codex",
+    )
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("CODEX_HOME", "/nonexistent")
     backend = CodexAppServerBackend()

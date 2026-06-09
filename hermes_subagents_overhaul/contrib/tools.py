@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 from typing import Any
 
-from hermes_subagents_overhaul import config, tools_schema
+from hermes_subagents_overhaul import binaries, config, tools_schema
 from hermes_subagents_overhaul.config import ProfileError
 from hermes_subagents_overhaul.manager import SubagentError, get_manager
 
@@ -66,7 +65,22 @@ def _read_subagent_handler(args: dict[str, Any], **kwargs: Any) -> str:
 
 
 def _any_backend_available() -> bool:
-    return bool(shutil.which("devin") or shutil.which("codex"))
+    """True if a devin or codex binary is resolvable.
+
+    Uses robust resolution (config/env/PATH/well-known locations) rather than a
+    bare ``shutil.which`` so the tools stay visible even when Hermes is launched
+    by a GUI ACP client with a minimal PATH (which doesn't include ~/.local/bin,
+    Homebrew, or nvm node dirs). Without this, the model only sees built-in
+    ``delegate_task`` and not ``run_subagent`` / ``read_subagent``.
+    """
+    try:
+        cfg = config.load_config()
+    except Exception:
+        cfg = None
+    return bool(
+        binaries.resolve_backend_binary("devin", cfg)
+        or binaries.resolve_backend_binary("codex", cfg)
+    )
 
 
 def contribute(ctx: Any) -> None:
