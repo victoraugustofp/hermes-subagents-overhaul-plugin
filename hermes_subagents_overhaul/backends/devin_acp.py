@@ -30,6 +30,37 @@ from hermes_subagents_overhaul.backends.base import (
 from hermes_subagents_overhaul.config import ResolvedProfile, SANDBOX_READ_ONLY
 
 
+def _resolve_devin_api_key() -> str | None:
+    """The windsurf API key for ACP `authenticate` (method ``windsurf-api-key``).
+
+    `devin acp` ignores local CLI creds at runtime, so the host must supply the key.
+    Source order: ``WINDSURF_API_KEY`` env, then ``windsurf_api_key`` in the on-disk
+    credential store written by ``devin auth login``.
+    """
+    env_key = os.getenv("WINDSURF_API_KEY")
+    if env_key:
+        return env_key
+    creds = Path(os.path.expanduser("~")) / ".local" / "share" / "devin" / "credentials.toml"
+    if not creds.is_file():
+        return None
+    try:
+        import tomllib  # py3.11+
+
+        with open(creds, "rb") as fh:
+            val = tomllib.load(fh).get("windsurf_api_key")
+        if val:
+            return str(val)
+    except Exception:
+        try:  # minimal fallback for `windsurf_api_key = "..."`
+            for line in creds.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if s.startswith("windsurf_api_key"):
+                    return s.partition("=")[2].strip().strip('"').strip("'") or None
+        except Exception:
+            return None
+    return None
+
+
 class DevinAcpBackend:
     """Spawns and drives ``devin acp`` as an ACP client over stdio."""
 
@@ -43,20 +74,13 @@ class DevinAcpBackend:
         if not shutil.which("devin"):
             return (False, "devin binary not found in PATH")
 
-        # Check for login via credentials file or env vars
-        home = os.path.expanduser("~")
-        creds_path = Path(home) / ".local" / "share" / "devin" / "credentials.toml"
-        config_path = Path(home) / ".config" / "devin" / "config.json"
-
-        has_creds = creds_path.exists() or config_path.exists()
-        has_env = (
-            os.getenv("WINDSURF_API_KEY")
-            or (os.getenv("DEVIN_API_KEY") and os.getenv("DEVIN_ORG_ID"))
-        )
-
-        if not (has_creds or has_env):
-            return (False, "devin not logged in (no credentials found)")
-
+        # `devin acp` mandates ACP-host authentication, so we need a usable key.
+        if not _resolve_devin_api_key():
+            return (
+                False,
+                "devin not authenticated for ACP (set WINDSURF_API_KEY or run "
+                "`devin auth login` to populate windsurf_api_key)",
+            )
         return (True, "")
 
     def start(
@@ -264,23 +288,21 @@ class DevinAcpHandle:
                 },
             )
 
-            # Authenticate if required (devin acp requires this)
+            # Authenticate. `devin acp` is the sole-credential model: it ignores
+            # local CLI creds and *requires* the ACP host to call `authenticate`
+            # with the API key. The correct ACP shape is
+            #   {"methodId": <advertised id>, "_meta": {"api_key": <key>}}
+            # (verified against devin 2026.5.26-7). The key comes from env or the
+            # on-disk credential store written by `devin auth login`.
             auth_methods = (init_result or {}).get("authMethods") or []
             if auth_methods:
-                # Try to authenticate with API key from env
-                api_key = os.getenv("DEVIN_API_KEY") or os.getenv("WINDSURF_API_KEY")
+                method_id = str(auth_methods[0].get("id") or "windsurf-api-key")
+                api_key = _resolve_devin_api_key()
                 if api_key:
-                    try:
-                        _request(
-                            "authenticate",
-                            {
-                                "authMethod": "windsurf-api-key",
-                                "params": {"meta": {"api_key": api_key}},
-                            },
-                        )
-                    except Exception:
-                        # Authentication failed, but continue anyway
-                        pass
+                    _request(
+                        "authenticate",
+                        {"methodId": method_id, "_meta": {"api_key": api_key}},
+                    )
 
             # Create or resume session
             if self._resume_handle:

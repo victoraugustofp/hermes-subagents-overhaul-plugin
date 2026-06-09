@@ -74,6 +74,18 @@ def test_devin_foreground_real():
     assert out.get("summary")
 
 
+@pytest.mark.skipif(not shutil.which("devin"), reason="devin not installed")
+def test_devin_background_then_read_real():
+    mgr = _mgr()
+    if not _backend_ready(mgr, "devin", "coder"):
+        pytest.skip("devin backend not available/authed")
+    started = mgr.run(title="bg", task=CHEAP_TASK, profile="coder", is_background=True)
+    assert started["status"] == STATUS_RUNNING
+    res = mgr.read(started["agent_id"], block=True, timeout=300)
+    assert res["status"] == STATUS_COMPLETED, res
+    assert any(n["agent_id"] == started["agent_id"] for n in mgr.drain_notifications())
+
+
 @pytest.mark.skipif(not shutil.which("codex"), reason="codex not installed")
 def test_codex_resume_real():
     mgr = _mgr()

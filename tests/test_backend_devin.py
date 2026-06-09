@@ -100,19 +100,18 @@ def test_check_available_devin_not_found(devin_backend: DevinAcpBackend) -> None
 
 
 def test_check_available_not_logged_in(devin_backend: DevinAcpBackend) -> None:
-    """check_available returns False if no credentials are found."""
+    """check_available returns False when no usable ACP API key can be resolved."""
     with patch("shutil.which", return_value="/usr/bin/devin"):
-        with patch("pathlib.Path.exists", return_value=False):
-            with patch.dict(os.environ, {}, clear=False):
-                # Remove all login env vars
-                for key in ["WINDSURF_API_KEY", "DEVIN_API_KEY", "DEVIN_ORG_ID"]:
-                    os.environ.pop(key, None)
-
-                ok, reason = devin_backend.check_available(
-                    ResolvedProfile(name="test", backend="devin")
-                )
-                assert not ok
-                assert "not logged in" in reason.lower()
+        # No env key and no resolvable on-disk windsurf_api_key.
+        with patch(
+            "hermes_subagents_overhaul.backends.devin_acp._resolve_devin_api_key",
+            return_value=None,
+        ):
+            ok, reason = devin_backend.check_available(
+                ResolvedProfile(name="test", backend="devin")
+            )
+            assert not ok
+            assert "not authenticated" in reason.lower()
 
 
 def test_check_available_with_credentials_file(devin_backend: DevinAcpBackend) -> None:
