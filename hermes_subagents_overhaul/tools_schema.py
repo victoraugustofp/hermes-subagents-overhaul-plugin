@@ -38,7 +38,8 @@ def _profiles_help(cfg: dict[str, Any] | None = None) -> str:
     return "; ".join(parts)
 
 
-def run_subagent_schema(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+def run_subagent_parameters(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """JSON-Schema *parameters* object for ``run_subagent`` (the inner schema)."""
     cfg = cfg if cfg is not None else config.load_config()
     profiles = config.available_profiles(cfg)
     return {
@@ -80,7 +81,8 @@ def run_subagent_schema(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
-def read_subagent_schema() -> dict[str, Any]:
+def read_subagent_parameters() -> dict[str, Any]:
+    """JSON-Schema *parameters* object for ``read_subagent`` (the inner schema)."""
     return {
         "type": "object",
         "properties": {
@@ -97,4 +99,29 @@ def read_subagent_schema() -> dict[str, Any]:
             },
         },
         "required": ["agent_id"],
+    }
+
+
+def run_subagent_schema(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Full OpenAI function schema for ``run_subagent``.
+
+    Hermes' tool registry consumes the schema as the *function* object and wraps
+    it as ``{"type": "function", "function": {**schema, "name": <tool>}}`` — it
+    does NOT read the separate ``description=`` register kwarg. So the schema
+    itself MUST carry ``description`` and ``parameters`` for the model to see the
+    tool's contract (otherwise the model sees only the bare name).
+    """
+    return {
+        "name": "run_subagent",
+        "description": RUN_SUBAGENT_DESCRIPTION,
+        "parameters": run_subagent_parameters(cfg),
+    }
+
+
+def read_subagent_schema() -> dict[str, Any]:
+    """Full OpenAI function schema for ``read_subagent`` (see ``run_subagent_schema``)."""
+    return {
+        "name": "read_subagent",
+        "description": READ_SUBAGENT_DESCRIPTION,
+        "parameters": read_subagent_parameters(),
     }

@@ -72,9 +72,32 @@ def test_contributors_register_tools_hooks_commands(ctx):
     assert ctx.tools["run_subagent"]["toolset"] == "subagents"
     assert "pre_llm_call" in ctx.hooks
     assert "subagents" in ctx.commands
-    # run_subagent schema exposes the live profile enum.
+    # run_subagent schema is a full function object (name/description/parameters)
+    # so the model sees the contract; the live profile enum lives under parameters.
     schema = ctx.tools["run_subagent"]["schema"]
-    assert "subagent_explore" in schema["properties"]["profile"]["enum"]
+    assert schema["description"]
+    assert "subagent_explore" in schema["parameters"]["properties"]["profile"]["enum"]
+
+
+def test_tool_schemas_are_full_function_objects():
+    """Guard the model-facing contract: the registry consumes ``schema`` as the
+    *function* object (``{**schema, "name": ...}``) and ignores the separate
+    ``description=`` kwarg, so the schema MUST carry ``description`` + ``parameters``
+    (a bare parameters object leaves the model with name-only, no contract)."""
+    from hermes_subagents_overhaul import tools_schema
+
+    for name, build in (
+        ("run_subagent", tools_schema.run_subagent_schema),
+        ("read_subagent", tools_schema.read_subagent_schema),
+    ):
+        schema = build()
+        assert isinstance(schema.get("description"), str) and schema["description"].strip(), name
+        params = schema.get("parameters")
+        assert isinstance(params, dict) and params.get("type") == "object", name
+        assert params.get("properties"), name
+        assert isinstance(params.get("required"), list) and params["required"], name
+        # Must NOT be the bare parameters object (the bug we fixed).
+        assert "properties" not in schema, f"{name}: schema must wrap params under 'parameters'"
 
 
 # --- manager: foreground ----------------------------------------------------
