@@ -55,7 +55,10 @@ class ResolvedProfile:
 # Top-level subagents.* defaults (everything but `profiles`).
 DEFAULT_SETTINGS: dict[str, Any] = {
     "default_backend": BACKEND_CODEX,
-    "workspace": "auto",            # "auto" -> parent cwd ($TERMINAL_CWD / cwd)
+    # "auto" -> derive the active workspace per-run (see hermes_subagents_overhaul.workspace):
+    # the editor/ACP session cwd, then parent agent, $TERMINAL_CWD, process cwd. Set to a
+    # concrete absolute path to pin every subagent there regardless of context.
+    "workspace": "auto",
     "max_background": 4,            # cap on concurrently-running background subagents
     "max_foreground": 1,           # Devin-style: one foreground subagent at a time
     "notify_via_inject": True,     # best-effort proactive wake (§8.3)
@@ -65,33 +68,33 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 # Built-in profiles (PLAN.md §3.3). User config is merged on top per-profile.
 DEFAULT_PROFILES: dict[str, dict[str, Any]] = {
     "subagent_explore": {
-        "backend": BACKEND_CODEX,
-        "model": "gpt-5.5",
+        "backend": BACKEND_DEVIN,
+        "model": "opus",
         "sandbox": SANDBOX_READ_ONLY,
         "read_only": True,
         "description": "Read-only research / exploration (no writes).",
     },
     "subagent_general": {
-        "backend": BACKEND_CODEX,
-        "model": "gpt-5.5",
+        "backend": BACKEND_DEVIN,
+        "model": "opus",
         "sandbox": SANDBOX_WORKSPACE_WRITE,
         "description": "General-purpose subagent with workspace write access.",
     },
     "coder": {
         "backend": BACKEND_DEVIN,
-        "model": "gpt",
+        "model": "claude-fable-5-high",
         "sandbox": SANDBOX_WORKSPACE_WRITE,
         "description": "Implement features / fix bugs (Devin).",
     },
     "debugger": {
-        "backend": BACKEND_CODEX,
-        "model": "gpt-5.5",
+        "backend": BACKEND_DEVIN,
+        "model": "claude-fable-5-medium",
         "sandbox": SANDBOX_WORKSPACE_WRITE,
         "description": "Systematic debugging / root-cause analysis.",
     },
     "frontend-developer": {
         "backend": BACKEND_DEVIN,
-        "model": "opus",
+        "model": "claude-fable-5-high",
         "sandbox": SANDBOX_WORKSPACE_WRITE,
         "description": "Frontend / UI work (Devin).",
     },

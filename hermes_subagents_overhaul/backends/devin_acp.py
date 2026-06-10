@@ -14,6 +14,7 @@ import queue
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -28,6 +29,22 @@ from hermes_subagents_overhaul.backends.base import (
     new_agent_id,
 )
 from hermes_subagents_overhaul.config import ResolvedProfile, SANDBOX_READ_ONLY
+
+# Handshake methods (initialize/authenticate/session·new/load) must respond
+# quickly; the agent *turn* (``session/prompt``) is open-ended work that can run
+# for many minutes — applying the short handshake timeout to it would kill real
+# tasks (issue #1, secondary finding). Both are overridable via env so operators
+# can tune them without code changes.
+_DEFAULT_HANDSHAKE_TIMEOUT = 60.0
+_DEFAULT_PROMPT_TIMEOUT = 600.0
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        raw = os.getenv(name)
+        return float(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _resolve_devin_api_key() -> str | None:
@@ -127,12 +144,28 @@ class DevinAcpHandle:
         self._cwd = cwd
         self._resume_handle = resume_handle
 
+        # Per-request timeouts: a tight handshake bound, an open-ended prompt
+        # bound (the actual agent turn). Both overridable via env.
+        self._handshake_timeout = _env_float(
+            "HERMES_SUBAGENT_HANDSHAKE_TIMEOUT", _DEFAULT_HANDSHAKE_TIMEOUT
+        )
+        self._prompt_timeout = _env_float(
+            "HERMES_SUBAGENT_PROMPT_TIMEOUT", _DEFAULT_PROMPT_TIMEOUT
+        )
+
         # Event queue and state
         self._event_queue: queue.Queue[SubagentEvent | None] = queue.Queue()
         self._permission_waiters: dict[str, threading.Event] = {}
         self._permission_outcomes: dict[str, tuple[str, str | None]] = {}
         self._cancelled = False
         self._result: SubagentResult | None = None
+
+        # Continuously-drained child stderr (bounded) so a failed/terminated
+        # process yields an actionable reason instead of a bare "process
+        # terminated", and so a chatty child can never deadlock on a full
+        # stderr pipe while we wait on stdout.
+        self._stderr_lines: deque[str] = deque(maxlen=100)
+        self._stderr_thread: threading.Thread | None = None
 
         # Spawn the child and run the ACP protocol
         self._proc: subprocess.Popen[str] | None = None
@@ -192,12 +225,44 @@ class DevinAcpHandle:
             self._event_queue.put(None)
             return
 
+        # Continuously drain stderr so the pipe never fills (which would stall a
+        # chatty child) and so we always have a recent reason on failure.
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
+
         # Start the reader thread
         self._reader_thread = threading.Thread(
             target=self._run_acp_protocol,
             daemon=True,
         )
         self._reader_thread.start()
+
+    def _drain_stderr(self) -> None:
+        """Accumulate the child's stderr (bounded) on a background thread."""
+        proc = self._proc
+        stderr = getattr(proc, "stderr", None) if proc is not None else None
+        if stderr is None:
+            return
+        try:
+            for line in stderr:
+                if line is None:
+                    break
+                text = str(line).rstrip("\n")
+                if text:
+                    self._stderr_lines.append(text)
+        except Exception:
+            pass
+
+    def _stderr_tail(self, max_chars: int = 800) -> str:
+        """Return the most recent child stderr (trimmed) for error messages."""
+        if not self._stderr_lines:
+            return ""
+        return "\n".join(self._stderr_lines)[-max_chars:]
+
+    def _stderr_detail(self) -> str:
+        """``"; devin acp stderr:\\n<tail>"`` when stderr was captured, else ``""``."""
+        tail = self._stderr_tail()
+        return f"; devin acp stderr:\n{tail}" if tail else ""
 
     def _run_acp_protocol(self) -> None:
         """Run the ACP protocol: initialize -> session/new -> session/prompt."""
@@ -230,11 +295,20 @@ class DevinAcpHandle:
         reader_thread = threading.Thread(target=_stdout_reader, daemon=True)
         reader_thread.start()
 
-        def _request(method: str, params: dict[str, Any]) -> Any:
-            """Send a JSON-RPC request and wait for the response."""
+        def _request(method: str, params: dict[str, Any], *, timeout: float | None = None) -> Any:
+            """Send a JSON-RPC request and wait for the response.
+
+            ``timeout`` defaults to the handshake bound; the actual agent turn
+            (``session/prompt``) passes the much longer prompt bound. Failures
+            are disambiguated into distinct, actionable errors:
+              * caller-side cancellation,
+              * the child process exiting (with its exit code + recent stderr),
+              * a genuine timeout (with recent stderr).
+            """
             nonlocal next_id
             next_id[0] += 1
             request_id = next_id[0]
+            eff_timeout = self._handshake_timeout if timeout is None else timeout
 
             payload = {
                 "jsonrpc": "2.0",
@@ -246,10 +320,18 @@ class DevinAcpHandle:
             self._proc.stdin.flush()
 
             # Wait for the response (with timeout)
-            deadline = time.monotonic() + 60.0  # 60s timeout per request
+            deadline = time.monotonic() + eff_timeout
             while time.monotonic() < deadline:
-                if self._cancelled or self._proc.poll() is not None:
-                    raise RuntimeError(f"Process terminated while waiting for {method}")
+                if self._cancelled:
+                    raise RuntimeError(
+                        f"devin acp {method} cancelled before a response arrived"
+                    )
+                exit_code = self._proc.poll()
+                if exit_code is not None:
+                    raise RuntimeError(
+                        f"devin acp exited (code {exit_code}) before responding to "
+                        f"{method}{self._stderr_detail()}"
+                    )
 
                 try:
                     msg = inbox.get(timeout=0.1)
@@ -272,7 +354,10 @@ class DevinAcpHandle:
 
                 return msg.get("result")
 
-            raise TimeoutError(f"Timed out waiting for devin acp response to {method}")
+            raise TimeoutError(
+                f"Timed out after {eff_timeout:g}s waiting for devin acp response to "
+                f"{method}{self._stderr_detail()}"
+            )
 
         try:
             # ACP handshake
@@ -345,7 +430,9 @@ class DevinAcpHandle:
             if not self.backend_session_id:
                 raise RuntimeError("devin acp did not return a sessionId")
 
-            # Send the prompt
+            # Send the prompt. This drives the actual agent turn, which is
+            # open-ended — use the long prompt timeout, not the handshake bound,
+            # so real multi-minute work is not killed mid-flight.
             response = _request(
                 "session/prompt",
                 {
@@ -357,6 +444,7 @@ class DevinAcpHandle:
                         }
                     ],
                 },
+                timeout=self._prompt_timeout,
             ) or {}
 
             # Extract stop reason

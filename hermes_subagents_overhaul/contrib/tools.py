@@ -29,6 +29,14 @@ def _run_subagent_handler(args: dict[str, Any], **kwargs: Any) -> str:
     profile = str(args.get("profile") or "").strip()
     is_background = bool(args.get("is_background", False))
     resume = args.get("resume") or None
+    workdir = str(args.get("workdir") or "").strip() or None
+    # ``task_id`` is threaded into every model-invoked tool by the host; under
+    # the ACP adapter it IS the session id, which is the key the editor's
+    # workspace cwd was registered under. ``parent_agent`` is only present on the
+    # CLI / ``dispatch_tool`` path. Both feed the workspace resolver so subagents
+    # consistently inherit the active project root instead of falling back to "/".
+    task_id = kwargs.get("task_id") or None
+    parent_agent = kwargs.get("parent_agent")
     if not task:
         return "Error: 'task' is required."
     if not resume and not profile:
@@ -41,6 +49,9 @@ def _run_subagent_handler(args: dict[str, Any], **kwargs: Any) -> str:
             is_background=is_background,
             resume=resume,
             progress_cb=_progress_cb_from_kwargs(kwargs),
+            task_id=task_id,
+            parent_agent=parent_agent,
+            workdir=workdir,
         )
     except (ProfileError, SubagentError) as exc:
         return f"Error: {exc}"

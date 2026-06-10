@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from hermes_subagents_overhaul import config
+from hermes_subagents_overhaul import config, workspace
 from hermes_subagents_overhaul.backends.base import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -68,6 +68,10 @@ class SubagentRecord:
     thread: threading.Thread | None = None
     session_id: str | None = None     # owning ACP/CLI session, for cancel_all
     notified: bool = False            # wake-up notification already drained?
+    cwd: str = ""                     # effective workspace handed to the backend
+    cwd_source: str = ""              # how cwd was resolved (provenance)
+    is_git_repo: bool = False         # whether the workspace is a git repository
+    workspace_warning: str | None = None  # surfaced when cwd is "/" / non-existent
 
     def elapsed_s(self) -> float:
         end = self.finished_at if self.finished_at is not None else time.monotonic()
@@ -85,16 +89,10 @@ class SubagentRecord:
         }
         if self.last_activity:
             d["last_activity"] = self.last_activity
+        d.update(_workspace_meta(self))
         if self.result is not None:
             d.update(self.result.to_dict())
         return d
-
-
-def _resolve_cwd(cfg: dict[str, Any]) -> str:
-    ws = cfg.get("workspace") or "auto"
-    if ws and ws != "auto":
-        return str(ws)
-    return os.environ.get("TERMINAL_CWD") or os.getcwd()
 
 
 def _resolve_session_id() -> str | None:
@@ -148,9 +146,15 @@ class SubagentManager:
         is_background: bool = False,
         resume: str | None = None,
         progress_cb: Callable | None = None,
+        task_id: str | None = None,
+        parent_agent: Any = None,
+        workdir: str | None = None,
     ) -> dict[str, Any]:
         if resume:
-            return self._run_resume(title=title, task=task, resume=resume, progress_cb=progress_cb)
+            return self._run_resume(
+                title=title, task=task, resume=resume, progress_cb=progress_cb,
+                task_id=task_id, parent_agent=parent_agent, workdir=workdir,
+            )
 
         resolved = config.resolve_profile(profile, self._cfg)  # raises ProfileError
         backend = self._backends.get(resolved.backend)
@@ -166,7 +170,11 @@ class SubagentManager:
             self._enforce_background_cap()
 
         agent_id = new_agent_id(resolved.backend)
-        cwd = _resolve_cwd(self._cfg)
+        ws = workspace.resolve(
+            self._cfg, task_id=task_id, parent_agent=parent_agent, workdir=workdir
+        )
+        if ws.warning:
+            logger.warning("subagent %s workspace: %s", agent_id, ws.warning)
         throttle = float(self._cfg.get("throttle_seconds", 1.0))
         sink = self._sink_factory(
             agent_id, background=is_background, progress_cb=progress_cb, throttle_seconds=throttle
@@ -179,6 +187,10 @@ class SubagentManager:
             background=is_background,
             sink=sink,
             session_id=_resolve_session_id(),
+            cwd=ws.path,
+            cwd_source=ws.source,
+            is_git_repo=ws.is_git_repo,
+            workspace_warning=ws.warning,
         )
         with self._lock:
             self._records[agent_id] = record
@@ -186,7 +198,7 @@ class SubagentManager:
         _safe_sink(sink.start, title=title, profile=profile, backend=resolved.backend,
                    task=task, model=resolved.model)
 
-        handle = backend.start(task=task, profile=resolved, cwd=cwd, resume_handle=None)
+        handle = backend.start(task=task, profile=resolved, cwd=ws.path, resume_handle=None)
         record.handle = handle
 
         if is_background:
@@ -194,7 +206,8 @@ class SubagentManager:
         return self._drive_foreground(record)
 
     def _run_resume(
-        self, *, title: str, task: str, resume: str, progress_cb: Callable | None
+        self, *, title: str, task: str, resume: str, progress_cb: Callable | None,
+        task_id: str | None = None, parent_agent: Any = None, workdir: str | None = None,
     ) -> dict[str, Any]:
         prior = self.get(resume)
         if prior is None:
@@ -212,7 +225,19 @@ class SubagentManager:
         ) or getattr(prior.handle, "backend_session_id", None)
 
         agent_id = new_agent_id(resolved.backend)
-        cwd = _resolve_cwd(self._cfg)
+        # Resume in the same workspace as the original run for continuity, unless
+        # the caller explicitly overrides it (or we can re-derive a better one).
+        ws = workspace.resolve(
+            self._cfg, task_id=task_id, parent_agent=parent_agent,
+            workdir=workdir or (prior.cwd or None),
+        )
+        # If no explicit workdir was provided and we fell back to prior.cwd,
+        # mark the source as "resumed" (not "argument") for accurate provenance.
+        cwd_source = ws.source
+        if not workdir and prior.cwd and ws.path == prior.cwd:
+            cwd_source = "resumed"
+        if ws.warning:
+            logger.warning("subagent %s workspace: %s", agent_id, ws.warning)
         throttle = float(self._cfg.get("throttle_seconds", 1.0))
         sink = self._sink_factory(
             agent_id, background=False, progress_cb=progress_cb, throttle_seconds=throttle
@@ -225,13 +250,17 @@ class SubagentManager:
             background=False,
             sink=sink,
             session_id=_resolve_session_id(),
+            cwd=ws.path,
+            cwd_source=cwd_source,
+            is_git_repo=ws.is_git_repo,
+            workspace_warning=ws.warning,
         )
         with self._lock:
             self._records[agent_id] = record
         _safe_sink(sink.start, title=record.title, profile=record.profile_name,
                    backend=resolved.backend, task=task, model=resolved.model)
         record.handle = backend.start(
-            task=task, profile=resolved, cwd=cwd, resume_handle=resume_handle
+            task=task, profile=resolved, cwd=ws.path, resume_handle=resume_handle
         )
         return self._drive_foreground(record)
 
@@ -249,6 +278,7 @@ class SubagentManager:
         assert record.result is not None
         out = {"agent_id": record.agent_id, "backend": record.backend_name,
                "profile": record.profile_name}
+        out.update(_workspace_meta(record))
         out.update(record.result.to_dict())
         return out
 
@@ -266,13 +296,15 @@ class SubagentManager:
         t = threading.Thread(target=_worker, name=f"subagent-{record.agent_id}", daemon=True)
         record.thread = t
         t.start()
-        return {
+        out = {
             "agent_id": record.agent_id,
             "status": STATUS_RUNNING,
             "backend": record.backend_name,
             "profile": record.profile_name,
             "note": "Running in background. Use read_subagent to collect the result.",
         }
+        out.update(_workspace_meta(record))
+        return out
 
     # ---- shared drain loop --------------------------------------------------
     def _drain(self, record: SubagentRecord) -> None:
@@ -350,9 +382,10 @@ class SubagentManager:
         if record.completion_event.is_set() and record.result is not None:
             out = {"agent_id": agent_id, "backend": record.backend_name,
                    "profile": record.profile_name}
+            out.update(_workspace_meta(record))
             out.update(record.result.to_dict())
             return out
-        return {
+        out = {
             "agent_id": agent_id,
             "status": STATUS_RUNNING,
             "backend": record.backend_name,
@@ -360,6 +393,8 @@ class SubagentManager:
             "elapsed_s": record.elapsed_s(),
             "last_activity": record.last_activity,
         }
+        out.update(_workspace_meta(record))
+        return out
 
     # ---- cancel / list ------------------------------------------------------
     def cancel(self, agent_id: str) -> bool:
@@ -475,6 +510,25 @@ def _safe_sink(fn: Callable, *args: Any, **kwargs: Any) -> None:
         fn(*args, **kwargs)
     except Exception as exc:  # sinks must never break the manager
         logger.debug("sink call failed: %s", exc)
+
+
+def _workspace_meta(record: SubagentRecord) -> dict[str, Any]:
+    """Trusted, runner-level workspace fields for every tool response.
+
+    Surfacing the *effective* workspace (and its provenance) — rather than only
+    whatever the subagent self-reports — is what makes workspace propagation
+    debuggable: callers can see exactly which directory a subagent ran in and
+    why, and get a loud warning when it is the filesystem root or missing.
+    """
+    meta: dict[str, Any] = {}
+    if record.cwd:
+        meta["workspace"] = record.cwd
+        if record.cwd_source:
+            meta["workspace_source"] = record.cwd_source
+        meta["is_git_repo"] = record.is_git_repo
+    if record.workspace_warning:
+        meta["workspace_warning"] = record.workspace_warning
+    return meta
 
 
 # ---- process-lifetime singleton ---------------------------------------------

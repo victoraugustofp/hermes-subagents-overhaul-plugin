@@ -697,3 +697,105 @@ def test_real_devin_trivial_task() -> None:
     # Should have at least a message event
     message_events = [e for e in events if e.get("kind") == "message"]
     assert len(message_events) > 0
+
+
+# --- Unit Tests: timeouts & actionable failures (issue #1, secondary) --------
+
+
+def test_prompt_timeout_is_long_and_handshake_short(test_profile: ResolvedProfile) -> None:
+    """The agent turn (session/prompt) must not inherit the tight handshake bound."""
+    responses = [
+        {"jsonrpc": "2.0", "id": 1, "result": {}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s"}},
+        {"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "end_turn"}},
+    ]
+    with patch("subprocess.Popen", side_effect=make_mock_popen(responses)):
+        handle = DevinAcpHandle(task="t", profile=test_profile, cwd="/tmp")
+        list(handle.events())
+        # Defaults: handshake bounded tightly, prompt allowed to run for minutes.
+        assert handle._handshake_timeout == 60.0
+        assert handle._prompt_timeout == 600.0
+        assert handle._prompt_timeout > handle._handshake_timeout
+
+
+def test_timeouts_are_env_overridable(
+    test_profile: ResolvedProfile, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HERMES_SUBAGENT_HANDSHAKE_TIMEOUT", "12")
+    monkeypatch.setenv("HERMES_SUBAGENT_PROMPT_TIMEOUT", "999")
+    responses = [
+        {"jsonrpc": "2.0", "id": 1, "result": {}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s"}},
+        {"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "end_turn"}},
+    ]
+    with patch("subprocess.Popen", side_effect=make_mock_popen(responses)):
+        handle = DevinAcpHandle(task="t", profile=test_profile, cwd="/tmp")
+        list(handle.events())
+        assert handle._handshake_timeout == 12.0
+        assert handle._prompt_timeout == 999.0
+
+
+def test_stderr_tail_and_detail_formatting(test_profile: ResolvedProfile) -> None:
+    """The stderr helpers produce actionable, bounded detail strings."""
+    responses = [
+        {"jsonrpc": "2.0", "id": 1, "result": {}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s"}},
+        {"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "end_turn"}},
+    ]
+    with patch("subprocess.Popen", side_effect=make_mock_popen(responses)):
+        handle = DevinAcpHandle(task="t", profile=test_profile, cwd="/tmp")
+        list(handle.events())
+        assert handle._stderr_detail() == ""  # nothing captured -> no noise
+        handle._stderr_lines.append("Error: could not authenticate")
+        handle._stderr_lines.append("stack frame ...")
+        assert "could not authenticate" in handle._stderr_tail()
+        detail = handle._stderr_detail()
+        assert detail.startswith("; devin acp stderr:")
+        assert "could not authenticate" in detail
+
+
+def _failing_popen(stderr_lines: list[str], *, none_polls: int = 12):
+    """A Popen whose process exits (poll != None) before any stdout response,
+    while emitting ``stderr_lines`` for the drain thread to capture."""
+
+    def factory(*args: Any, **kwargs: Any) -> Any:
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdin.write = MagicMock()
+        proc.stdin.flush = MagicMock()
+        proc.stdout = iter(())  # no responses ever arrive
+        proc.stderr = iter(list(stderr_lines))
+        # Stay "alive" for a few polls so the stderr drain thread runs, then exit.
+        seq = [None] * none_polls + [1]
+        state = {"i": 0}
+
+        def poll() -> Any:
+            i = state["i"]
+            state["i"] = min(i + 1, len(seq) - 1)
+            return seq[i]
+
+        proc.poll = poll
+        proc.terminate = MagicMock()
+        proc.wait = MagicMock()
+        proc.kill = MagicMock()
+        return proc
+
+    return factory
+
+
+def test_process_exit_before_response_is_actionable(test_profile: ResolvedProfile) -> None:
+    """A child that dies before responding yields exit code + captured stderr,
+    not the old opaque 'Process terminated while waiting for ...'."""
+    with patch(
+        "subprocess.Popen",
+        side_effect=_failing_popen(["FATAL: devin acp boom", "  at handler"]),
+    ):
+        handle = DevinAcpHandle(task="t", profile=test_profile, cwd="/tmp")
+        list(handle.events())
+        result = handle.result()
+
+    assert result.status == STATUS_FAILED
+    assert result.error is not None
+    assert "exited (code 1)" in result.error
+    assert "initialize" in result.error  # which method we were awaiting
+    assert "devin acp boom" in result.error  # the real, actionable reason

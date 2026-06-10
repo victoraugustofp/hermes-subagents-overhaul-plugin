@@ -76,6 +76,16 @@ def run_subagent_parameters(cfg: dict[str, Any] | None = None) -> dict[str, Any]
                     "subagent with this prompt (always runs foreground)."
                 ),
             },
+            "workdir": {
+                "type": "string",
+                "description": (
+                    "Optional absolute path to the workspace/repo the subagent "
+                    "should run in. Omit to inherit the active project root "
+                    "automatically (the editor/CLI workspace). Set this only to "
+                    "override that default — e.g. to scope a subagent to a "
+                    "subdirectory or a different checkout."
+                ),
+            },
         },
         "required": ["title", "task", "profile"],
     }

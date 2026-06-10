@@ -14,8 +14,11 @@ for the validated transport/bridge notes.
 
 ## At a glance
 
-- **Tools (Devin-spec schemas):** `run_subagent(title, task, profile, is_background, resume)`
+- **Tools (Devin-spec schemas):** `run_subagent(title, task, profile, is_background, resume, workdir)`
   and `read_subagent(agent_id, block, timeout)`.
+- **Consistent workspace.** Every subagent — both backends, foreground and background — runs in
+  the active project root. The runner forwards the editor/CLI workspace automatically and reports
+  the effective `workspace` (+ a loud `workspace_warning` if it ever resolves to `/`).
 - **Profiles → backend + model + settings.** `profile` selects Devin vs Codex, the model, and
   the sandbox/permission posture (config-driven; defaults mirror Devin's named profiles).
 - **Rich native transport.** Foreground subagents forward their granular tool-calls, diffs,
@@ -90,7 +93,8 @@ acp:
 # ~/.hermes/config.yaml
 subagents:
   default_backend: codex
-  workspace: auto            # 'auto' -> parent cwd ($TERMINAL_CWD)
+  workspace: auto            # 'auto' -> the active editor/CLI workspace (see "Workspace")
+                             # or set a concrete absolute path to pin every subagent there
   max_background: 4
   throttle_seconds: 1.0
   profiles:
@@ -123,6 +127,31 @@ run_subagent({ "title": "fix", "task": "Now fix the first failure", "profile": "
 ```
 
 `/subagents` lists running/finished subagents; `/subagents cancel [agent_id]` cancels.
+
+## Workspace
+
+Subagents run in a concrete directory. The runner resolves it once, at spawn time, and applies
+it identically to **every** profile/backend (so `coder`, `debugger`, `subagent_explore`, … never
+disagree). Resolution precedence (first concrete hit wins):
+
+1. an explicit **`workdir`** argument to `run_subagent`;
+2. a concrete **`subagents.workspace`** in config (anything other than `auto`);
+3. the **active ACP session's editor workspace** (the `cwd` the editor sent on `session/new`,
+   looked up by the session/task id) — this is what makes Devin Desktop / Zed sessions work;
+4. the **parent agent's** workspace hints (CLI / `dispatch_tool`);
+5. **`$TERMINAL_CWD`**;
+6. the process cwd (`os.getcwd()`), as a last resort.
+
+The effective directory and its provenance are returned on every `run_subagent` / `read_subagent`
+call as `workspace` and `workspace_source`. If it resolves to a filesystem root (`/`) or a
+non-existent path, the response also carries a loud `workspace_warning` instead of silently
+inspecting the wrong place. Pass `workdir` to scope a subagent to a subdirectory or a different
+checkout.
+
+> Devin's agent turn can run for many minutes; the `session/prompt` request is bounded by
+> `HERMES_SUBAGENT_PROMPT_TIMEOUT` (default 600s), while the ACP handshake uses
+> `HERMES_SUBAGENT_HANDSHAKE_TIMEOUT` (default 60s). A child that dies before responding now
+> reports its exit code and recent stderr instead of an opaque "process terminated".
 
 ## Testing
 

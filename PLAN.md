@@ -409,8 +409,14 @@ Plugin tool handlers receive `handler(args, **kwargs)` with `task_id`/`user_task
 `parent_agent`.** We obtain what we need without it:
 - **`session_id`** ← `gateway.session_context.get_session_env("HERMES_SESSION_ID")` (set by
   the ACP adapter inside `_run_agent`; also `os.environ` fallback for CLI/cron).
-- **workspace cwd** ← `$TERMINAL_CWD` → else `agent.runtime_cwd` → else `os.getcwd()`
-  (same resolution the existing acp-plugin `acp_workspace_info` tool uses).
+- **workspace cwd** ← resolved by `hermes_subagents_overhaul.workspace.resolve(...)` (issue #1):
+  explicit `workdir` arg → concrete `subagents.workspace` → **the ACP session's editor cwd**
+  (read from `tools.terminal_tool._task_env_overrides[task_id]["cwd"]`, where `task_id` is the
+  session id the ACP adapter registered the editor workspace under) → parent-agent hints →
+  `$TERMINAL_CWD` → `os.getcwd()`. The effective path + provenance is returned to the model as
+  `workspace`/`workspace_source`, with a loud `workspace_warning` when it is `/` or missing.
+  (`$TERMINAL_CWD`/`os.getcwd()` alone are insufficient: under a GUI-launched ACP server they are
+  the server's process cwd — usually `/` — not the editor's project root.)
 - **ACP emitter** ← `hermes_acp_plugin.runtime.current_acp_session()` (Project B), keyed by
   that `session_id`.
 - **CLI/TUI progress** ← best-effort: if a `parent_agent` ever is available (e.g. via
